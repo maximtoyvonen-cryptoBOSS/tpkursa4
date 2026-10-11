@@ -1,0 +1,140 @@
+﻿<Window x:Class="tpkursa4.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:tpkursa4"
+        mc:Ignorable="d"
+        Title="Система контроля погоды" Height="640" Width="1020">
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+    </Window.Resources>
+
+    <Window.DataContext>
+        <local:MainViewModel/>
+    </Window.DataContext>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="250"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <GroupBox Header="Географические объекты" Margin="10" Grid.Column="0">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Bottom" Text="{Binding StatusText}" Foreground="Gray" Margin="0,5,0,0" TextWrapping="Wrap"/>
+                <ListBox ItemsSource="{Binding Locations}"
+         SelectedItem="{Binding SelectedLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+         DisplayMemberPath="Name" />
+            </DockPanel>
+        </GroupBox>
+
+        <ScrollViewer Grid.Column="1" Margin="10" VerticalScrollBarVisibility="Auto">
+        <StackPanel>
+            <TextBlock Text="Аналитическая сводка" FontSize="18" FontWeight="Bold" Margin="0,0,0,10"/>
+
+            <GroupBox Header="Период анализа" Margin="0,0,0,10" Padding="8">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="С:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <DatePicker SelectedDate="{Binding StartDate}" Width="130"/>
+                    <TextBlock Text="По:" VerticalAlignment="Center" Margin="15,0,5,0"/>
+                    <DatePicker SelectedDate="{Binding EndDate}" Width="130"/>
+                    <Button Content="Обновить данные" Command="{Binding RefreshCommand}"
+                        Height="28" Margin="15,0,0,0" Padding="15,0" Cursor="Hand"/>
+                    <Button Content="Тестовые данные +5" Command="{Binding SeedCommand}"
+                        Height="28" Margin="10,0,0,0" Padding="10,0" ToolTip="Автозаполнение БД тестовыми данными"/>
+                </StackPanel>
+            </GroupBox>
+
+            <TextBlock Text="{Binding ErrorMessage}" Foreground="Red" TextWrapping="Wrap" Margin="0,0,0,5"/>
+            <TextBlock Text="Загрузка..." Visibility="{Binding IsBusy, Converter={StaticResource BooleanToVisibilityConverter}}" Foreground="Gray" Margin="0,0,0,5"/>
+
+            <Border BorderBrush="Gray" BorderThickness="1" Padding="10">
+                <StackPanel>
+                    <GroupBox Header="Параметры пункта наблюдения" Margin="0,0,0,15" Padding="8">
+                        <UniformGrid Columns="2">
+                            <StackPanel Orientation="Horizontal" Margin="5">
+                                <TextBlock Text="Тип поселения: " FontWeight="SemiBold" Foreground="Gray"/>
+                                <TextBlock Text="{Binding CurrentSummary.SettlementType}" FontWeight="Bold"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="5">
+                                <TextBlock Text="Тип метеостанции: " FontWeight="SemiBold" Foreground="Gray"/>
+                                <TextBlock Text="{Binding CurrentSummary.StationType}" FontWeight="Bold"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="5">
+                                <TextBlock Text="Датчиков в работе: " FontWeight="SemiBold" Foreground="Gray"/>
+                                <TextBlock Text="{Binding CurrentSummary.ActiveSensorsCount}" FontWeight="Bold" Foreground="DarkBlue"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="5">
+                                <TextBlock Text="Погода сейчас: " FontWeight="SemiBold" Foreground="Gray"/>
+                                <TextBlock Text="{Binding CurrentSummary.LatestCondition}" FontWeight="Bold" Foreground="DarkGreen"/>
+                            </StackPanel>
+                        </UniformGrid>
+                    </GroupBox>
+                    <HeaderedContentControl Header="Средняя температура:">
+                        <TextBlock Text="{Binding CurrentSummary.AverageTemperature, StringFormat={}{0:F1} °C}"
+                               FontSize="24" Foreground="DarkRed"/>
+                    </HeaderedContentControl>
+
+                    <HeaderedContentControl Header="Средняя влажность:" Margin="0,10,0,0">
+                        <TextBlock Text="{Binding CurrentSummary.AverageHumidity, StringFormat={}{0:F0} %}"
+                               FontSize="20"/>
+                    </HeaderedContentControl>
+
+                    <HeaderedContentControl Header="Среднее давление:" Margin="0,10,0,0">
+                        <TextBlock Text="{Binding CurrentSummary.AveragePressure, StringFormat={}{0:F0} мм рт. ст.}"
+                               FontSize="20"/>
+                    </HeaderedContentControl>
+
+                    <HeaderedContentControl Header="Средняя скорость ветра:" Margin="0,10,0,0">
+                        <TextBlock Text="{Binding CurrentSummary.AverageWindSpeed, StringFormat={}{0:F1} м/с}"
+               FontSize="20" Foreground="DarkBlue"/>
+                    </HeaderedContentControl>
+                </StackPanel>
+            </Border>
+
+            <GroupBox Header="Замеры за период (CRUD)" Margin="0,15,0,0" Padding="8">
+                <StackPanel>
+                    <DataGrid ItemsSource="{Binding Measurements}" SelectedItem="{Binding SelectedMeasurement}"
+                        AutoGenerateColumns="False" Height="160" IsReadOnly="True" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Дата" Binding="{Binding Timestamp, StringFormat=dd.MM.yyyy HH:mm}" Width="130"/>
+                            <DataGridTextColumn Header="t, °C" Binding="{Binding Temperature}" Width="60"/>
+                            <DataGridTextColumn Header="Влажн., %" Binding="{Binding Humidity}" Width="70"/>
+                            <DataGridTextColumn Header="Давл." Binding="{Binding Pressure}" Width="60"/>
+                            <DataGridTextColumn Header="Ветер, м/с" Binding="{Binding WindSpeed}" Width="80"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <UniformGrid Columns="4" Margin="0,8,0,0">
+                        <StackPanel Margin="0,0,5,0">
+                            <TextBlock Text="t, °C"/>
+                            <TextBox Text="{Binding NewTemperature, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,0">
+                            <TextBlock Text="Влажность, %"/>
+                            <TextBox Text="{Binding NewHumidity, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,5,0">
+                            <TextBlock Text="Давление"/>
+                            <TextBox Text="{Binding NewPressure, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+                        <StackPanel Margin="5,0,0,0">
+                            <TextBlock Text="Ветер, м/с"/>
+                            <TextBox Text="{Binding NewWindSpeed, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+                    </UniformGrid>
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button Content="Добавить" Command="{Binding AddCommand}" Width="110" Height="30" Margin="0,0,10,0"/>
+                        <Button Content="Изменить" Command="{Binding UpdateCommand}" Width="110" Height="30" Margin="0,0,10,0"/>
+                        <Button Content="Удалить" Command="{Binding DeleteCommand}" Width="110" Height="30"/>
+                    </StackPanel>
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>
