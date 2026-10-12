@@ -89,6 +89,8 @@
     </ApplicationDefinition>
     <Compile Include="AnalyticsEngine.cs" />
     <Compile Include="AuthService.cs" />
+    <Compile Include="UserAccount.cs" />
+    <Compile Include="WeatherConditionRules.cs" />
     <Compile Include="DataInboundGateway.cs" />
     <Compile Include="DbRepository.cs" />
     <Compile Include="IWeatherRepository.cs" />

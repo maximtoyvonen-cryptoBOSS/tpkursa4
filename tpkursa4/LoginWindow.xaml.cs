@@ -5,6 +5,8 @@ namespace tpkursa4
 {
     public partial class LoginWindow : Window
     {
+        public UserAccount AuthenticatedUser { get; private set; }
+
         public LoginWindow()
         {
             InitializeComponent();
@@ -13,37 +15,39 @@ namespace tpkursa4
         private void BtnLogin_Click(object sender, RoutedEventArgs e)
         {
             string username = txtUsername.Text.Trim();
+            string password = txtPassword.Password;
 
-            if (string.IsNullOrEmpty(username))
+            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
             {
-                MessageBox.Show("Пожалуйста, введите логин!", "Предупреждение",
-                                MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageBox.Show("Введите логин и пароль.", "Предупреждение",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             try
             {
-                // Бизнес-логика в AuthService, здесь только View.
-                if (AuthService.CreateDefault().UserExists(username))
+                var user = AuthService.CreateDefault().TryLogin(username, password);
+                if (user != null)
                 {
-                    this.DialogResult = true;
+                    AuthenticatedUser = user;
+                    DialogResult = true;
                 }
                 else
                 {
-                    MessageBox.Show($"Пользователь '{username}' не найден в системе!", "Ошибка доступа",
-                                    MessageBoxButton.OK, MessageBoxImage.Error);
+                    MessageBox.Show("Неверный логин или пароль.", "Ошибка доступа",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Ошибка при обращении к таблице пользователей:\n{ex.Message}",
-                                "Ошибка БД", MessageBoxButton.OK, MessageBoxImage.Error);
+                    "Ошибка БД", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
         private void BtnCancel_Click(object sender, RoutedEventArgs e)
         {
-            this.DialogResult = false;
+            DialogResult = false;
         }
     }
 }

@@ -5,15 +5,11 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:tpkursa4"
         mc:Ignorable="d"
-        Title="Система контроля погоды" Height="640" Width="1020">
+        Title="{Binding WindowTitle}" Height="720" Width="1080">
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
     </Window.Resources>
-
-    <Window.DataContext>
-        <local:MainViewModel/>
-    </Window.DataContext>
 
     <Grid>
         <Grid.ColumnDefinitions>
@@ -23,10 +19,12 @@
 
         <GroupBox Header="Географические объекты" Margin="10" Grid.Column="0">
             <DockPanel>
+                <Button DockPanel.Dock="Bottom" Content="{Binding FavoriteButtonText}"
+                        Command="{Binding ToggleFavoriteCommand}" Margin="0,8,0,0" Height="28"/>
                 <TextBlock DockPanel.Dock="Bottom" Text="{Binding StatusText}" Foreground="Gray" Margin="0,5,0,0" TextWrapping="Wrap"/>
                 <ListBox ItemsSource="{Binding Locations}"
-         SelectedItem="{Binding SelectedLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-         DisplayMemberPath="Name" />
+                         SelectedItem="{Binding SelectedLocation, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         DisplayMemberPath="ListTitle" />
             </DockPanel>
         </GroupBox>
 
@@ -35,15 +33,32 @@
             <TextBlock Text="Аналитическая сводка" FontSize="18" FontWeight="Bold" Margin="0,0,0,10"/>
 
             <GroupBox Header="Период анализа" Margin="0,0,0,10" Padding="8">
-                <StackPanel Orientation="Horizontal">
+                <WrapPanel>
                     <TextBlock Text="С:" VerticalAlignment="Center" Margin="0,0,5,0"/>
                     <DatePicker SelectedDate="{Binding StartDate}" Width="130"/>
                     <TextBlock Text="По:" VerticalAlignment="Center" Margin="15,0,5,0"/>
                     <DatePicker SelectedDate="{Binding EndDate}" Width="130"/>
                     <Button Content="Обновить данные" Command="{Binding RefreshCommand}"
                         Height="28" Margin="15,0,0,0" Padding="15,0" Cursor="Hand"/>
-                    <Button Content="Тестовые данные +5" Command="{Binding SeedCommand}"
-                        Height="28" Margin="10,0,0,0" Padding="10,0" ToolTip="Автозаполнение БД тестовыми данными"/>
+                    <Button Content="{Binding SensorButtonText}" Command="{Binding ToggleSensorCommand}"
+                        Height="28" Margin="10,0,0,0" Padding="10,0"/>
+                    <Button Content="Тестовые данные" Command="{Binding SeedCommand}"
+                        Height="28" Margin="10,0,0,0" Padding="10,0"
+                        Visibility="{Binding CanEdit, Converter={StaticResource BooleanToVisibilityConverter}}"
+                        ToolTip="Автозаполнение БД тестовыми данными"/>
+                </WrapPanel>
+            </GroupBox>
+
+            <GroupBox Header="Поселения по погоде" Margin="0,0,0,10" Padding="8">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <ComboBox ItemsSource="{Binding WeatherConditions}"
+                                  SelectedItem="{Binding ConditionFilter}"
+                                  Width="180" Height="26"/>
+                        <Button Content="Найти" Command="{Binding FilterByWeatherCommand}"
+                                Height="26" Margin="10,0,0,0" Padding="12,0"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding WeatherQueryResult}" TextWrapping="Wrap" Margin="0,6,0,0"/>
                 </StackPanel>
             </GroupBox>
 
@@ -107,9 +122,11 @@
                             <DataGridTextColumn Header="Влажн., %" Binding="{Binding Humidity}" Width="70"/>
                             <DataGridTextColumn Header="Давл." Binding="{Binding Pressure}" Width="60"/>
                             <DataGridTextColumn Header="Ветер, м/с" Binding="{Binding WindSpeed}" Width="80"/>
+                            <DataGridTextColumn Header="Погода" Binding="{Binding Condition}" Width="90"/>
                         </DataGrid.Columns>
                     </DataGrid>
-                    <UniformGrid Columns="4" Margin="0,8,0,0">
+                    <UniformGrid Columns="4" Margin="0,8,0,0"
+                                 Visibility="{Binding CanEdit, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <StackPanel Margin="0,0,5,0">
                             <TextBlock Text="t, °C"/>
                             <TextBox Text="{Binding NewTemperature, UpdateSourceTrigger=PropertyChanged}"/>
@@ -127,7 +144,8 @@
                             <TextBox Text="{Binding NewWindSpeed, UpdateSourceTrigger=PropertyChanged}"/>
                         </StackPanel>
                     </UniformGrid>
-                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0"
+                                Visibility="{Binding CanEdit, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <Button Content="Добавить" Command="{Binding AddCommand}" Width="110" Height="30" Margin="0,0,10,0"/>
                         <Button Content="Изменить" Command="{Binding UpdateCommand}" Width="110" Height="30" Margin="0,0,10,0"/>
                         <Button Content="Удалить" Command="{Binding DeleteCommand}" Width="110" Height="30"/>

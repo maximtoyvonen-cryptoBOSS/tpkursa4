@@ -7,51 +7,41 @@ namespace tpkursa4
     public class MockRepository : IWeatherRepository
     {
         private readonly List<Location> _locations;
+        private readonly HashSet<int> _favorites = new HashSet<int>();
 
         public MockRepository()
         {
-            // 1. Создаем города
-            var novosibirsk = new Settlement("Новосибирск", "Город") { Id = 1 }; // Задали ID = 1
-            var berdsk = new Settlement("Бердск", "Город") { Id = 2 };           // Задали ID = 2
-
-            // 2. Создаем область
-            var nso = new Region("Новосибирская область") { Id = 3 };            // Задали ID = 3
+            var novosibirsk = new Settlement("Новосибирск", "Город") { Id = 1 };
+            var berdsk = new Settlement("Бердск", "Город") { Id = 2 };
+            var nso = new Region("Новосибирская область") { Id = 3 };
             nso.AddLocation(novosibirsk);
             nso.AddLocation(berdsk);
 
             _locations = new List<Location> { nso, novosibirsk, berdsk };
 
-            // 3. Добавляем РАЗНЫЕ замеры
-            // В Новосибирске -15
             novosibirsk.AddMeasurement(new WeatherMeasurement(-15.0, 80, 750, DateTime.Now));
-
-            // В Бердске -5 (для контраста)
             berdsk.AddMeasurement(new WeatherMeasurement(-5.0, 60, 760, DateTime.Now));
-
-            // Теперь:
-            // Выберешь Новосибирск -> покажет -15
-            // Выберешь Бердск -> покажет -5
-            // Выберешь Область -> покажет -10 (среднее между -15 и -5)
         }
 
         public void SaveMeasurement(Settlement settlement, WeatherMeasurement measurement)
         {
-            settlement.AddMeasurement(measurement);
+            var target = FindSettlement(settlement) ?? settlement;
+            target.AddMeasurement(measurement);
         }
 
         public IEnumerable<WeatherMeasurement> GetHistory(Location location, WeatherPeriod period)
         {
             if (location is Settlement settlement)
-                return settlement.Measurements.Where(m => period.Contains(m.Timestamp));
+                return (FindSettlement(settlement) ?? settlement).Measurements.Where(m => period.Contains(m.Timestamp));
 
             if (location is Region region)
                 return region.GetAllMeasurements().Where(m => period.Contains(m.Timestamp));
 
             return Enumerable.Empty<WeatherMeasurement>();
         }
+
         public (string settlementType, string stationType, int sensorsCount, string latestCondition) GetExtendedStationInfo(int settlementId)
         {
-            // Возвращаем заглушку, чтобы заглушить ошибку компилятора
             return ("Город (Тест)", "Автоматическая (Тест)", 4, "Ясно (Тест)");
         }
 
@@ -62,14 +52,14 @@ namespace tpkursa4
 
         public void UpdateObservation(Settlement settlement, DateTime oldTimestamp, WeatherMeasurement updated)
         {
-            var target = _locations.OfType<Settlement>().FirstOrDefault(s => s.Id == settlement.Id) ?? settlement;
+            var target = FindSettlement(settlement) ?? settlement;
             if (!target.ReplaceMeasurement(oldTimestamp, updated))
                 throw new InvalidOperationException("Наблюдение не найдено.");
         }
 
         public void DeleteObservation(Settlement settlement, DateTime timestamp)
         {
-            var target = _locations.OfType<Settlement>().FirstOrDefault(s => s.Id == settlement.Id) ?? settlement;
+            var target = FindSettlement(settlement) ?? settlement;
             if (!target.RemoveMeasurement(timestamp))
                 throw new InvalidOperationException("Наблюдение не найдено.");
         }
@@ -94,6 +84,20 @@ namespace tpkursa4
             return n;
         }
 
+        public IReadOnlyList<string> GetWeatherConditionNames() =>
+            new[] { WeatherConditionRules.Clear, WeatherConditionRules.Cloudy, WeatherConditionRules.Rain, WeatherConditionRules.Storm };
+
+        public IReadOnlyList<string> GetSettlementsByWeather(string conditionName) =>
+            _locations.OfType<Settlement>().Select(s => s.Name).ToList();
+
+        public IReadOnlyList<int> GetFavoriteSettlementIds(int userId) => _favorites.ToList();
+
+        public void SetFavorite(int userId, int settlementId, bool isFavorite)
+        {
+            if (isFavorite) _favorites.Add(settlementId);
+            else _favorites.Remove(settlementId);
+        }
+
         public System.Threading.Tasks.Task<IEnumerable<Location>> GetAllLocationsAsync() =>
             System.Threading.Tasks.Task.FromResult(GetAllLocations());
         public System.Threading.Tasks.Task<IEnumerable<WeatherMeasurement>> GetHistoryAsync(Location location, WeatherPeriod period) =>
@@ -104,5 +108,8 @@ namespace tpkursa4
             System.Threading.Tasks.Task.FromResult(SeedTestData(observationsPerSettlement));
 
         public IEnumerable<Location> GetAllLocations() => _locations;
+
+        private Settlement FindSettlement(Settlement settlement) =>
+            _locations.OfType<Settlement>().FirstOrDefault(s => s.Id == settlement.Id);
     }
 }

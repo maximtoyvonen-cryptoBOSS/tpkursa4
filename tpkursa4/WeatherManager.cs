@@ -1,11 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace tpkursa4
 {
-    /// <summary>
-    /// Сервис управления погодой. Координирует процессы между слоями системы.
-    /// </summary>
     public class WeatherManager
     {
         private readonly IWeatherRepository _repository;
@@ -19,66 +17,62 @@ namespace tpkursa4
             _analytics = new AnalyticsEngine();
         }
 
-        public bool RecordWeather(Settlement settlement, WeatherMeasurement measurement)
+        public bool TryRecordWeather(Settlement settlement, WeatherMeasurement measurement, out string error)
         {
-            if (!_validator.IsValid(measurement, settlement))
-            {
+            if (!_validator.TryValidate(measurement, settlement, out error))
                 return false;
-            }
 
             _repository.SaveMeasurement(settlement, measurement);
             return true;
         }
 
-        /// <summary>
-        /// Координация получения аналитических данных.
-        /// Для области средние считаются по всем её поселениям (требование варианта).
-        /// </summary>
+        public bool RecordWeather(Settlement settlement, WeatherMeasurement measurement) =>
+            TryRecordWeather(settlement, measurement, out _);
+
         public WeatherSummary GetStatistics(Location location, WeatherPeriod period)
         {
             if (location == null) throw new ArgumentNullException(nameof(location));
             if (period == null) throw new ArgumentNullException(nameof(period));
 
             var history = _repository.GetHistory(location, period);
-            var summary = _analytics.Calculate(history);
+            var summary = _analytics.GetFullSummary(history);
 
-            // Проверяем, что выбран именно город/деревня (класс Settlement)
             if (location is Settlement)
             {
                 var extra = _repository.GetExtendedStationInfo(location.Id);
-                summary.SettlementType = extra.settlementType;
-                summary.StationType = extra.stationType;
-                summary.ActiveSensorsCount = extra.sensorsCount;
-                summary.LatestCondition = extra.latestCondition;
+                ApplyExtra(summary, extra);
             }
             else if (location is Region)
             {
                 var extra = _repository.GetRegionExtendedInfo(location.Id);
-                summary.SettlementType = extra.settlementType;
-                summary.StationType = extra.stationType;
-                summary.ActiveSensorsCount = extra.sensorsCount;
-                summary.LatestCondition = extra.latestCondition;
+                ApplyExtra(summary, extra);
             }
 
             return summary;
         }
 
-        // Этот метод возвращает плоский список для MainViewModel
-        public IEnumerable<Location> GetLocations()
+        private static void ApplyExtra(WeatherSummary summary, (string settlementType, string stationType, int sensorsCount, string latestCondition) extra)
         {
-            return _repository.GetAllLocations();
+            summary.SettlementType = extra.settlementType;
+            summary.StationType = extra.stationType;
+            summary.ActiveSensorsCount = extra.sensorsCount;
+            summary.LatestCondition = extra.latestCondition;
         }
 
-        public System.Threading.Tasks.Task<IEnumerable<Location>> GetLocationsAsync() =>
+        public IEnumerable<Location> GetLocations() => _repository.GetAllLocations();
+
+        public Task<IEnumerable<Location>> GetLocationsAsync() =>
             _repository.GetAllLocationsAsync();
 
-        // CRUD через валидацию (валидация на уровне приложения, а не по исключениям БД).
-        public bool UpdateObservation(Settlement settlement, DateTime oldTimestamp, WeatherMeasurement updated)
+        public bool TryUpdateObservation(Settlement settlement, DateTime oldTimestamp, WeatherMeasurement updated, out string error)
         {
-            if (!_validator.IsValid(updated, settlement)) return false;
+            if (!_validator.TryValidate(updated, settlement, out error)) return false;
             _repository.UpdateObservation(settlement, oldTimestamp, updated);
             return true;
         }
+
+        public bool UpdateObservation(Settlement settlement, DateTime oldTimestamp, WeatherMeasurement updated) =>
+            TryUpdateObservation(settlement, oldTimestamp, updated, out _);
 
         public void DeleteObservation(Settlement settlement, DateTime timestamp) =>
             _repository.DeleteObservation(settlement, timestamp);
@@ -86,7 +80,7 @@ namespace tpkursa4
         public int SeedTestData(int observationsPerSettlement) =>
             _repository.SeedTestData(observationsPerSettlement);
 
-        public System.Threading.Tasks.Task<int> SeedTestDataAsync(int observationsPerSettlement) =>
+        public Task<int> SeedTestDataAsync(int observationsPerSettlement) =>
             _repository.SeedTestDataAsync(observationsPerSettlement);
     }
 }

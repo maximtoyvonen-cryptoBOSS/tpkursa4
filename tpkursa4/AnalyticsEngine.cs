@@ -6,53 +6,32 @@ namespace tpkursa4
 {
     public class AnalyticsEngine
     {
-        public double CalculateAverageTemperature(Location location, WeatherPeriod period)
-        {
-            IEnumerable<WeatherMeasurement> measurements;
+        public double CalculateAverageTemperature(IEnumerable<WeatherMeasurement> data) =>
+            Average(data, m => m.Temperature);
 
-            if (location is Settlement settlement)
-            {
-                measurements = settlement.Measurements.Where(m => period.Contains(m.Timestamp));
-            }
-            else if (location is Region region)
-            {
-                measurements = region.GetAllMeasurements().Where(m => period.Contains(m.Timestamp));
-            }
-            else
-            {
-                return 0;
-            }
+        public WeatherSummary GetFullSummary(IEnumerable<WeatherMeasurement> data) =>
+            Calculate(data);
 
-            if (!measurements.Any()) return 0;
-
-            return measurements.Average(m => m.Temperature);
-        }
-
-        public WeatherSummary GetFullSummary(Location location, WeatherPeriod period)
-        {
-            IEnumerable<WeatherMeasurement> data = Enumerable.Empty<WeatherMeasurement>();
-
-            if (location is Settlement s)
-                data = s.Measurements.Where(m => period.Contains(m.Timestamp));
-            else if (location is Region r)
-                data = r.GetAllMeasurements().Where(m => period.Contains(m.Timestamp));
-
-            return Calculate(data);
-        }
-
-        // Этот метод вызывается в WeatherManager при работе с БД
         public WeatherSummary Calculate(IEnumerable<WeatherMeasurement> data)
         {
-            if (data == null || !data.Any())
-                return new WeatherSummary();
+            if (data == null) return new WeatherSummary();
+
+            var list = data as IList<WeatherMeasurement> ?? data.ToList();
+            if (list.Count == 0) return new WeatherSummary();
 
             return new WeatherSummary
             {
-                AverageTemperature = data.Average(m => m.Temperature),
-                AverageHumidity = data.Average(m => m.Humidity),
-                AveragePressure = data.Average(m => m.Pressure),
-                AverageWindSpeed = data.Average(m => m.WindSpeed) // Считаем средний ветер
+                AverageTemperature = Average(list, m => m.Temperature),
+                AverageHumidity = Average(list, m => m.Humidity),
+                AveragePressure = Average(list, m => m.Pressure),
+                AverageWindSpeed = Average(list, m => m.WindSpeed)
             };
+        }
+
+        private static double Average(IEnumerable<WeatherMeasurement> data, Func<WeatherMeasurement, double?> selector)
+        {
+            var values = data.Select(selector).Where(v => v.HasValue).Select(v => v.Value).ToList();
+            return values.Count == 0 ? 0 : values.Average();
         }
     }
 
@@ -61,11 +40,10 @@ namespace tpkursa4
         public double AverageTemperature { get; set; }
         public double AverageHumidity { get; set; }
         public double AveragePressure { get; set; }
-        public double AverageWindSpeed { get; set; } // Добавили свойство в структуру
-                                                     // Добавь эти свойства внутрь класса WeatherSummary
+        public double AverageWindSpeed { get; set; }
         public string SettlementType { get; set; } = "Неизвестно";
         public string StationType { get; set; } = "Нет станции";
-        public int ActiveSensorsCount { get; set; } = 0;
+        public int ActiveSensorsCount { get; set; }
         public string LatestCondition { get; set; } = "Нет данных";
     }
 }

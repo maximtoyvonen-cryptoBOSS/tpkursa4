@@ -1,7 +1,9 @@
 ﻿using Npgsql;
 using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace tpkursa4
 {
@@ -19,9 +21,6 @@ namespace tpkursa4
             _connectionString = connectionString;
         }
 
-        /// <summary>
-        /// Строка подключения: сначала App.config, иначе значения по умолчанию для курсовой.
-        /// </summary>
         public static string CreateDefaultConnectionString()
         {
             try
@@ -30,14 +29,13 @@ namespace tpkursa4
                     .ConnectionStrings["Weather"]?.ConnectionString;
                 if (!string.IsNullOrWhiteSpace(cs)) return cs;
             }
-            catch { /* нет System.Configuration — используем дефолт */ }
+            catch { }
             return "Host=localhost;Username=postgres;Password=123;Database=Weather";
         }
 
         public static DbRepository CreateDefault() =>
             new DbRepository(CreateDefaultConnectionString());
 
-        // Загрузка локаций (осталась без изменений, типы int скорректированы)
         public IEnumerable<Location> GetAllLocations()
         {
             var locations = new List<Location>();
@@ -46,7 +44,6 @@ namespace tpkursa4
             {
                 conn.Open();
 
-                // 1. Загружаем регионы
                 using (var cmd = new NpgsqlCommand("SELECT id, name FROM regions", conn))
                 using (var reader = cmd.ExecuteReader())
                 {
@@ -58,28 +55,20 @@ namespace tpkursa4
                     }
                 }
 
-                // 2. Загружаем города
-                string settlementSql = "SELECT id, name, type, region_id FROM settlements";
-
-                using (var cmd = new NpgsqlCommand(settlementSql, conn))
+                using (var cmd = new NpgsqlCommand("SELECT id, name, type, region_id FROM settlements", conn))
                 using (var reader = cmd.ExecuteReader())
                 {
                     while (reader.Read())
                     {
                         var settlement = new Settlement(reader.GetString(1), reader.GetString(2));
                         settlement.Id = reader.GetInt32(0);
-
                         locations.Add(settlement);
 
-                        // 3. Связываем город с его регионом
                         if (!reader.IsDBNull(3))
                         {
                             int parentRegionId = reader.GetInt32(3);
                             var region = locations.OfType<Region>().FirstOrDefault(r => r.Id == parentRegionId);
-                            if (region != null)
-                            {
-                                region.AddLocation(settlement);
-                            }
+                            region?.AddLocation(settlement);
                         }
                     }
                 }
@@ -87,19 +76,12 @@ namespace tpkursa4
             return locations;
         }
 
-        // 1. ЧТЕНИЕ: сводные замеры из 4 датчиков (unit_id 1-4) с одной меткой времени.
-        // Для Region берём все поселения области, для Settlement — одно поселение.
-        // Фильтр по периоду выполняется в SQL, а не в памяти.
         public IEnumerable<WeatherMeasurement> GetHistory(Location location, WeatherPeriod period)
         {
             var measurements = new List<WeatherMeasurement>();
             if (location == null || period == null) return measurements;
 
             bool isRegion = location is Region;
-
-            // Для области считаем по всем её поселениям (требование курсовой),
-            // группируем по (timestamp, settlement), чтобы замеры разных станций
-            // с одинаковым временем не склеивались через MAX.
             string locationFilter = isRegion
                 ? "ws.settlement_id IN (SELECT id FROM public.settlements WHERE region_id = @locId)"
                 : "ws.settlement_id = @locId";
@@ -107,19 +89,18 @@ namespace tpkursa4
             using (var conn = new NpgsqlConnection(_connectionString))
             {
                 conn.Open();
-
-                // Теперь мы джойним таблицу датчиков (s) и смотрим на s.unit_id:
-                // 1 - Температура, 2 - Влажность, 3 - Давление, 4 - Скорость ветра
                 string sql = $@"
                     SELECT 
                         m.timestamp,
-                        COALESCE(MAX(CASE WHEN s.unit_id = 1 THEN m.value END), 0) as temperature,
-                        COALESCE(MAX(CASE WHEN s.unit_id = 2 THEN m.value END), 0) as humidity,
-                        COALESCE(MAX(CASE WHEN s.unit_id = 3 THEN m.value END), 0) as pressure,
-                        COALESCE(MAX(CASE WHEN s.unit_id = 4 THEN m.value END), 0) as wind_speed
+                        MAX(CASE WHEN s.unit_id = 1 THEN m.value END) as temperature,
+                        MAX(CASE WHEN s.unit_id = 2 THEN m.value END) as humidity,
+                        MAX(CASE WHEN s.unit_id = 3 THEN m.value END) as pressure,
+                        MAX(CASE WHEN s.unit_id = 4 THEN m.value END) as wind_speed,
+                        MAX(wc.name) as condition
                     FROM public.measurements m
                     JOIN public.sensors s ON m.sensor_id = s.id
                     JOIN public.weather_stations ws ON ws.id = s.station_id
+                    JOIN public.weather_conditions wc ON m.condition_id = wc.id
                     WHERE {locationFilter}
                       AND m.timestamp BETWEEN @start AND @end
                     GROUP BY m.timestamp, ws.settlement_id
@@ -136,11 +117,12 @@ namespace tpkursa4
                         while (reader.Read())
                         {
                             measurements.Add(new WeatherMeasurement(
-                                Convert.ToDouble(reader["temperature"]),
-                                Convert.ToDouble(reader["humidity"]),
-                                Convert.ToDouble(reader["pressure"]),
-                                Convert.ToDouble(reader["wind_speed"]),
-                                Convert.ToDateTime(reader["timestamp"])
+                                ReadDouble(reader, "temperature"),
+                                ReadDouble(reader, "humidity"),
+                                ReadDouble(reader, "pressure"),
+                                ReadDouble(reader, "wind_speed"),
+                                Convert.ToDateTime(reader["timestamp"]),
+                                reader["condition"] == DBNull.Value ? null : Convert.ToString(reader["condition"])
                             ));
                         }
                     }
@@ -149,8 +131,6 @@ namespace tpkursa4
             return measurements;
         }
 
-        // 2. ЗАПИСЬ: один замер = 4 строки (по датчикам unit 1-4) с одной меткой времени.
-        // Всё в одной транзакции: либо все 4 строки, либо ничего.
         public void SaveMeasurement(Settlement settlement, WeatherMeasurement measurement)
         {
             if (settlement == null) throw new ArgumentNullException(nameof(settlement));
@@ -161,22 +141,10 @@ namespace tpkursa4
                 conn.Open();
                 using (var tx = conn.BeginTransaction())
                 {
-                    // Один раз находим станцию поселения, дальше работаем по её id.
-                    int? stationId;
-                    using (var findCmd = new NpgsqlCommand(
-                        "SELECT id FROM public.weather_stations WHERE settlement_id = @settlementId LIMIT 1", conn, tx))
-                    {
-                        findCmd.Parameters.Add(new NpgsqlParameter("settlementId", NpgsqlTypes.NpgsqlDbType.Integer) { Value = settlement.Id });
-                        var obj = findCmd.ExecuteScalar();
-                        stationId = (obj == null || obj == DBNull.Value) ? (int?)null : Convert.ToInt32(obj);
-                    }
+                    int stationId = RequireStationId(conn, tx, settlement);
+                    int conditionId = ResolveConditionId(conn, tx, WeatherConditionRules.Infer(measurement));
 
-                    if (stationId == null)
-                        throw new InvalidOperationException($"У поселения '{settlement.Name}' (id={settlement.Id}) нет метеостанции.");
-
-                    // Ищем ID нужного датчика через подзапрос, фильтруя по станции города и unit_id датчика.
-                    // В поле condition_id передаем @conditionId (по умолчанию 1 - 'Ясно').
-                    string sql = @"
+                    const string sql = @"
                     INSERT INTO public.measurements (sensor_id, condition_id, value, timestamp)
                     VALUES 
                         ((SELECT id FROM public.sensors WHERE station_id = @stationId AND unit_id = 1), @conditionId, @temp, @time),
@@ -186,15 +154,12 @@ namespace tpkursa4
 
                     using (var cmd = new NpgsqlCommand(sql, conn, tx))
                     {
-                        cmd.Parameters.Add(new NpgsqlParameter("stationId", NpgsqlTypes.NpgsqlDbType.Integer) { Value = stationId.Value });
-
-                        // Передаем ID погодного условия. Сейчас зашито 1 (Ясно).
-                        cmd.Parameters.AddWithValue("conditionId", 1);
-
-                        cmd.Parameters.AddWithValue("temp", measurement.Temperature);
-                        cmd.Parameters.AddWithValue("hum", measurement.Humidity);
-                        cmd.Parameters.AddWithValue("press", measurement.Pressure);
-                        cmd.Parameters.AddWithValue("wind", measurement.WindSpeed);
+                        cmd.Parameters.Add(new NpgsqlParameter("stationId", NpgsqlTypes.NpgsqlDbType.Integer) { Value = stationId });
+                        cmd.Parameters.AddWithValue("conditionId", conditionId);
+                        cmd.Parameters.AddWithValue("temp", measurement.Temperature ?? (object)DBNull.Value);
+                        cmd.Parameters.AddWithValue("hum", measurement.Humidity ?? (object)DBNull.Value);
+                        cmd.Parameters.AddWithValue("press", measurement.Pressure ?? (object)DBNull.Value);
+                        cmd.Parameters.AddWithValue("wind", measurement.WindSpeed ?? (object)DBNull.Value);
                         cmd.Parameters.AddWithValue("time", measurement.Timestamp);
 
                         int affected = cmd.ExecuteNonQuery();
@@ -206,16 +171,18 @@ namespace tpkursa4
                 }
             }
         }
-        // Вставь этот метод внутрь класса DbRepository
+
         public (string settlementType, string stationType, int sensorsCount, string latestCondition) GetExtendedStationInfo(int settlementId)
         {
             using (var conn = new NpgsqlConnection(_connectionString))
             {
                 conn.Open();
-                string sql = @"
+                const string sql = @"
             SELECT 
                 s.type AS settlement_type,
-                COALESCE(ws.type, 'Нет станции') AS station_type,
+                COALESCE(
+                    (SELECT st.station_type FROM public.get_station_types_by_settlement(s.name) st LIMIT 1),
+                    'Нет станции') AS station_type,
                 (SELECT COUNT(*)::int FROM public.sensors WHERE station_id = ws.id) AS sensors_count,
                 COALESCE(
                     (SELECT wc.name 
@@ -250,15 +217,15 @@ namespace tpkursa4
             return ("Неизвестно", "Нет станции", 0, "Нет данных");
         }
 
-        // Сводка для области: агрегируем по всем её поселениям.
         public (string settlementType, string stationType, int sensorsCount, string latestCondition) GetRegionExtendedInfo(int regionId)
         {
             using (var conn = new NpgsqlConnection(_connectionString))
             {
                 conn.Open();
-                string sql = @"
+                const string sql = @"
             SELECT
-                (SELECT COUNT(*)::int FROM public.settlements WHERE region_id = @regionId) AS places,
+                (SELECT COUNT(*)::int FROM public.get_settlements_by_region(
+                    (SELECT name FROM public.regions WHERE id = @regionId))) AS places,
                 (SELECT COUNT(*)::int FROM public.sensors sn
                   JOIN public.weather_stations ws ON ws.id = sn.station_id
                   JOIN public.settlements s ON s.id = ws.settlement_id
@@ -292,7 +259,6 @@ namespace tpkursa4
             return ("Область", "Несколько станций", 0, "Нет данных");
         }
 
-        // CRUD Update: обновляем 4 строки одного наблюдения (один timestamp -> новый замер).
         public void UpdateObservation(Settlement settlement, DateTime oldTimestamp, WeatherMeasurement updated)
         {
             if (settlement == null) throw new ArgumentNullException(nameof(settlement));
@@ -303,24 +269,28 @@ namespace tpkursa4
                 conn.Open();
                 using (var tx = conn.BeginTransaction())
                 {
-                    string sql = @"
-                    UPDATE public.measurements m SET value = @v, timestamp = @newTs
+                    int stationId = RequireStationId(conn, tx, settlement);
+                    int conditionId = ResolveConditionId(conn, tx, WeatherConditionRules.Infer(updated));
+
+                    const string sql = @"
+                    UPDATE public.measurements m SET value = @v, timestamp = @newTs, condition_id = @cid
                     FROM public.sensors s
                     WHERE m.sensor_id = s.id
-                      AND s.station_id = (SELECT id FROM public.weather_stations WHERE settlement_id = @settlementId LIMIT 1)
+                      AND s.station_id = @stationId
                       AND s.unit_id = @unit AND m.timestamp = @oldTs;";
 
                     int total = 0;
-                    double[] values = { updated.Temperature, updated.Humidity, updated.Pressure, updated.WindSpeed };
+                    double?[] values = { updated.Temperature, updated.Humidity, updated.Pressure, updated.WindSpeed };
                     for (int unit = 1; unit <= 4; unit++)
                     {
                         using (var cmd = new NpgsqlCommand(sql, conn, tx))
                         {
-                            cmd.Parameters.Add(new NpgsqlParameter("settlementId", NpgsqlTypes.NpgsqlDbType.Integer) { Value = settlement.Id });
+                            cmd.Parameters.AddWithValue("stationId", stationId);
                             cmd.Parameters.AddWithValue("unit", unit);
                             cmd.Parameters.AddWithValue("oldTs", oldTimestamp);
                             cmd.Parameters.AddWithValue("newTs", updated.Timestamp);
-                            cmd.Parameters.AddWithValue("v", values[unit - 1]);
+                            cmd.Parameters.AddWithValue("v", values[unit - 1] ?? (object)DBNull.Value);
+                            cmd.Parameters.AddWithValue("cid", conditionId);
                             total += cmd.ExecuteNonQuery();
                         }
                     }
@@ -331,7 +301,6 @@ namespace tpkursa4
             }
         }
 
-        // CRUD Delete: удаляем 4 строки одного наблюдения.
         public void DeleteObservation(Settlement settlement, DateTime timestamp)
         {
             if (settlement == null) throw new ArgumentNullException(nameof(settlement));
@@ -339,11 +308,11 @@ namespace tpkursa4
             using (var conn = new NpgsqlConnection(_connectionString))
             {
                 conn.Open();
-                string sql = @"
+                const string sql = @"
                     DELETE FROM public.measurements m
                     USING public.sensors s
                     WHERE m.sensor_id = s.id
-                      AND s.station_id = (SELECT id FROM public.weather_stations WHERE settlement_id = @settlementId LIMIT 1)
+                      AND s.station_id = (SELECT id FROM public.weather_stations WHERE settlement_id = @settlementId)
                       AND m.timestamp = @ts;";
                 using (var cmd = new NpgsqlCommand(sql, conn))
                 {
@@ -356,7 +325,6 @@ namespace tpkursa4
             }
         }
 
-        // Автозаполнение БД тестовыми различимыми данными (по поселениям разные базы температур).
         public int SeedTestData(int observationsPerSettlement)
         {
             if (observationsPerSettlement <= 0) throw new ArgumentOutOfRangeException(nameof(observationsPerSettlement));
@@ -390,20 +358,136 @@ namespace tpkursa4
                         Math.Round(1 + rnd.NextDouble() * 7, 1),
                         ts);
                     try { SaveMeasurement(tmp, m); inserted += 4; }
-                    catch (PostgresException ex) when (ex.SqlState == "23505") { /* коллизия timestamp — пропускаем */ }
+                    catch (PostgresException ex) when (ex.SqlState == "23505") { }
                 }
             }
             return inserted;
         }
 
-        // Асинхронные обёртки: выносят блокирующий доступ к БД в фоновый поток.
-        public System.Threading.Tasks.Task<IEnumerable<Location>> GetAllLocationsAsync() =>
-            System.Threading.Tasks.Task.Run(() => GetAllLocations());
-        public System.Threading.Tasks.Task<IEnumerable<WeatherMeasurement>> GetHistoryAsync(Location location, WeatherPeriod period) =>
-            System.Threading.Tasks.Task.Run(() => GetHistory(location, period));
-        public System.Threading.Tasks.Task SaveMeasurementAsync(Settlement settlement, WeatherMeasurement measurement) =>
-            System.Threading.Tasks.Task.Run(() => SaveMeasurement(settlement, measurement));
-        public System.Threading.Tasks.Task<int> SeedTestDataAsync(int observationsPerSettlement) =>
-            System.Threading.Tasks.Task.Run(() => SeedTestData(observationsPerSettlement));
+        public IReadOnlyList<string> GetWeatherConditionNames()
+        {
+            var names = new List<string>();
+            using (var conn = new NpgsqlConnection(_connectionString))
+            {
+                conn.Open();
+                using (var cmd = new NpgsqlCommand("SELECT name FROM public.weather_conditions ORDER BY id", conn))
+                using (var reader = cmd.ExecuteReader())
+                {
+                    while (reader.Read()) names.Add(reader.GetString(0));
+                }
+            }
+            return names;
+        }
+
+        public IReadOnlyList<string> GetSettlementsByWeather(string conditionName)
+        {
+            var names = new List<string>();
+            if (string.IsNullOrWhiteSpace(conditionName)) return names;
+
+            using (var conn = new NpgsqlConnection(_connectionString))
+            {
+                conn.Open();
+                using (var cmd = new NpgsqlCommand(
+                    "SELECT settlement_name FROM public.get_settlements_by_weather(@c)", conn))
+                {
+                    cmd.Parameters.AddWithValue("c", conditionName);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read()) names.Add(reader.GetString(0));
+                    }
+                }
+            }
+            return names;
+        }
+
+        public IReadOnlyList<int> GetFavoriteSettlementIds(int userId)
+        {
+            var ids = new List<int>();
+            using (var conn = new NpgsqlConnection(_connectionString))
+            {
+                conn.Open();
+                using (var cmd = new NpgsqlCommand(
+                    "SELECT settlement_id FROM public.favorite_settlements WHERE user_id = @u", conn))
+                {
+                    cmd.Parameters.AddWithValue("u", userId);
+                    using (var reader = cmd.ExecuteReader())
+                    {
+                        while (reader.Read()) ids.Add(reader.GetInt32(0));
+                    }
+                }
+            }
+            return ids;
+        }
+
+        public void SetFavorite(int userId, int settlementId, bool isFavorite)
+        {
+            using (var conn = new NpgsqlConnection(_connectionString))
+            {
+                conn.Open();
+                if (isFavorite)
+                {
+                    using (var cmd = new NpgsqlCommand(@"
+                        INSERT INTO public.favorite_settlements (user_id, settlement_id)
+                        VALUES (@u, @s)
+                        ON CONFLICT (user_id, settlement_id) DO NOTHING", conn))
+                    {
+                        cmd.Parameters.AddWithValue("u", userId);
+                        cmd.Parameters.AddWithValue("s", settlementId);
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+                else
+                {
+                    using (var cmd = new NpgsqlCommand(
+                        "DELETE FROM public.favorite_settlements WHERE user_id = @u AND settlement_id = @s", conn))
+                    {
+                        cmd.Parameters.AddWithValue("u", userId);
+                        cmd.Parameters.AddWithValue("s", settlementId);
+                        cmd.ExecuteNonQuery();
+                    }
+                }
+            }
+        }
+
+        public Task<IEnumerable<Location>> GetAllLocationsAsync() =>
+            Task.Run(() => GetAllLocations());
+        public Task<IEnumerable<WeatherMeasurement>> GetHistoryAsync(Location location, WeatherPeriod period) =>
+            Task.Run(() => GetHistory(location, period));
+        public Task SaveMeasurementAsync(Settlement settlement, WeatherMeasurement measurement) =>
+            Task.Run(() => SaveMeasurement(settlement, measurement));
+        public Task<int> SeedTestDataAsync(int observationsPerSettlement) =>
+            Task.Run(() => SeedTestData(observationsPerSettlement));
+
+        private static int RequireStationId(NpgsqlConnection conn, NpgsqlTransaction tx, Settlement settlement)
+        {
+            using (var findCmd = new NpgsqlCommand(
+                "SELECT id FROM public.weather_stations WHERE settlement_id = @settlementId", conn, tx))
+            {
+                findCmd.Parameters.Add(new NpgsqlParameter("settlementId", NpgsqlTypes.NpgsqlDbType.Integer) { Value = settlement.Id });
+                var obj = findCmd.ExecuteScalar();
+                if (obj == null || obj == DBNull.Value)
+                    throw new InvalidOperationException($"У поселения '{settlement.Name}' (id={settlement.Id}) нет метеостанции.");
+                return Convert.ToInt32(obj);
+            }
+        }
+
+        private static int ResolveConditionId(NpgsqlConnection conn, NpgsqlTransaction tx, string conditionName)
+        {
+            using (var cmd = new NpgsqlCommand(
+                "SELECT id FROM public.weather_conditions WHERE name = @n", conn, tx))
+            {
+                cmd.Parameters.AddWithValue("n", conditionName ?? WeatherConditionRules.Clear);
+                var obj = cmd.ExecuteScalar();
+                if (obj == null || obj == DBNull.Value)
+                    throw new InvalidOperationException("Неизвестное погодное условие: " + conditionName);
+                return Convert.ToInt32(obj);
+            }
+        }
+
+        private static double? ReadDouble(IDataRecord reader, string column)
+        {
+            int i = reader.GetOrdinal(column);
+            return reader.IsDBNull(i) ? (double?)null : Convert.ToDouble(reader.GetValue(i));
+        }
     }
 }

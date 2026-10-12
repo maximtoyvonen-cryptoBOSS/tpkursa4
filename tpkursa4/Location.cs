@@ -1,5 +1,4 @@
-﻿using System;
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
 namespace tpkursa4
@@ -7,7 +6,8 @@ namespace tpkursa4
     public abstract class Location : INotifyPropertyChanged
     {
         private string _name;
-        private int _id; // Теперь это обычный int для соответствия БД
+        private int _id;
+        private bool _isFavorite;
 
         public int Id
         {
@@ -31,15 +31,30 @@ namespace tpkursa4
                 {
                     _name = value;
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(ListTitle));
                 }
             }
         }
 
+        public bool IsFavorite
+        {
+            get => _isFavorite;
+            set
+            {
+                if (_isFavorite != value)
+                {
+                    _isFavorite = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(ListTitle));
+                }
+            }
+        }
+
+        public string ListTitle => IsFavorite ? "★ " + Name : Name;
+
         protected Location(string name)
         {
             Name = name;
-            // Убираем Guid.NewGuid(), так как для int дефолтное значение 0, 
-            // а реальные ID прилетят из базы данных
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

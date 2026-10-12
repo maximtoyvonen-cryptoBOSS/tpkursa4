@@ -10,14 +10,12 @@ using System.Windows.Input;
 
 namespace tpkursa4
 {
-    /// <summary>
-    /// ViewModel главного окна (паттерн MVVM).
-    /// </summary>
     public class MainViewModel : INotifyPropertyChanged
     {
         private readonly IWeatherRepository _repository;
         private readonly WeatherManager _manager;
         private readonly Validator _validator;
+        private readonly UserAccount _user;
 
         private Location _selectedLocation;
         private WeatherSummary _currentSummary = new WeatherSummary();
@@ -28,13 +26,21 @@ namespace tpkursa4
         private bool _isRefreshing;
         private string _errorMessage;
         private string _statusText;
+        private string _conditionFilter;
+        private string _weatherQueryResult;
 
-        // Поля для фонового датчика
         private VirtualWeatherStation _weatherStation;
         private bool _isSensorRunning;
 
         public ObservableCollection<Location> Locations { get; } = new ObservableCollection<Location>();
         public ObservableCollection<WeatherMeasurement> Measurements { get; } = new ObservableCollection<WeatherMeasurement>();
+        public ObservableCollection<string> WeatherConditions { get; } = new ObservableCollection<string>();
+
+        public UserAccount CurrentUser => _user;
+        public bool CanEdit { get; }
+        public string WindowTitle => _user != null
+            ? $"Система контроля погоды — {_user.Username} ({_user.RoleName})"
+            : "Система контроля погоды";
 
         public Location SelectedLocation
         {
@@ -45,6 +51,7 @@ namespace tpkursa4
                 {
                     _selectedLocation = value;
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(FavoriteButtonText));
                     _ = RefreshAsync();
                 }
             }
@@ -65,13 +72,25 @@ namespace tpkursa4
         public DateTime StartDate
         {
             get => _startDate;
-            set { _startDate = value; OnPropertyChanged(); }
+            set
+            {
+                if (_startDate == value) return;
+                _startDate = value;
+                OnPropertyChanged();
+                _ = RefreshAsync();
+            }
         }
 
         public DateTime EndDate
         {
             get => _endDate;
-            set { _endDate = value; OnPropertyChanged(); }
+            set
+            {
+                if (_endDate == value) return;
+                _endDate = value;
+                OnPropertyChanged();
+                _ = RefreshAsync();
+            }
         }
 
         public string NewTemperature { get; set; } = "15";
@@ -97,6 +116,18 @@ namespace tpkursa4
             set { _statusText = value; OnPropertyChanged(); }
         }
 
+        public string ConditionFilter
+        {
+            get => _conditionFilter;
+            set { _conditionFilter = value; OnPropertyChanged(); }
+        }
+
+        public string WeatherQueryResult
+        {
+            get => _weatherQueryResult;
+            set { _weatherQueryResult = value; OnPropertyChanged(); }
+        }
+
         public bool IsSensorRunning
         {
             get => _isSensorRunning;
@@ -109,6 +140,8 @@ namespace tpkursa4
         }
 
         public string SensorButtonText => IsSensorRunning ? "Остановить датчик" : "Запустить датчик";
+        public string FavoriteButtonText =>
+            SelectedLocation is Settlement s && s.IsFavorite ? "Убрать из избранного" : "В избранное";
 
         public ICommand RefreshCommand { get; }
         public ICommand AddCommand { get; }
@@ -116,23 +149,33 @@ namespace tpkursa4
         public ICommand DeleteCommand { get; }
         public ICommand SeedCommand { get; }
         public ICommand ToggleSensorCommand { get; }
+        public ICommand ToggleFavoriteCommand { get; }
+        public ICommand FilterByWeatherCommand { get; }
 
-        public MainViewModel() : this(DbRepository.CreateDefault())
+        public MainViewModel() : this(DbRepository.CreateDefault(), null)
         {
         }
 
-        public MainViewModel(IWeatherRepository repository)
+        public MainViewModel(IWeatherRepository repository) : this(repository, null)
+        {
+        }
+
+        public MainViewModel(IWeatherRepository repository, UserAccount user)
         {
             _repository = repository ?? throw new ArgumentNullException(nameof(repository));
+            _user = user;
+            CanEdit = user == null || user.IsAdmin;
             _manager = new WeatherManager(repository);
             _validator = new Validator(repository);
 
             RefreshCommand = new RelayCommand(async _ => await RefreshAsync());
-            AddCommand = new RelayCommand(_ => AddAsync());
-            UpdateCommand = new RelayCommand(_ => UpdateAsync(), _ => SelectedMeasurement != null);
-            DeleteCommand = new RelayCommand(_ => DeleteAsync(), _ => SelectedMeasurement != null);
-            SeedCommand = new RelayCommand(_ => SeedAsync());
+            AddCommand = new RelayCommand(_ => AddAsync(), _ => CanEdit);
+            UpdateCommand = new RelayCommand(_ => UpdateAsync(), _ => CanEdit && SelectedMeasurement != null);
+            DeleteCommand = new RelayCommand(_ => DeleteAsync(), _ => CanEdit && SelectedMeasurement != null);
+            SeedCommand = new RelayCommand(_ => SeedAsync(), _ => CanEdit);
             ToggleSensorCommand = new RelayCommand(_ => ToggleSensor());
+            ToggleFavoriteCommand = new RelayCommand(_ => ToggleFavorite(), _ => SelectedLocation is Settlement && _user != null && _user.Id > 0);
+            FilterByWeatherCommand = new RelayCommand(_ => FilterByWeather());
 
             LoadAsync();
         }
@@ -143,9 +186,23 @@ namespace tpkursa4
             ErrorMessage = null;
             try
             {
-                var locs = await _repository.GetAllLocationsAsync();
+                var locs = await _manager.GetLocationsAsync();
+                var favorites = _user != null && _user.Id > 0
+                    ? _repository.GetFavoriteSettlementIds(_user.Id)
+                    : Array.Empty<int>();
+
                 Locations.Clear();
-                foreach (var l in locs) Locations.Add(l);
+                foreach (var l in locs)
+                {
+                    if (l is Settlement s) s.IsFavorite = favorites.Contains(s.Id);
+                    Locations.Add(l);
+                }
+
+                WeatherConditions.Clear();
+                foreach (var name in _repository.GetWeatherConditionNames())
+                    WeatherConditions.Add(name);
+                if (WeatherConditions.Count > 0)
+                    ConditionFilter = WeatherConditions[0];
 
                 SelectedLocation = Locations.FirstOrDefault();
                 StatusText = $"Загружено объектов: {Locations.Count}";
@@ -160,18 +217,10 @@ namespace tpkursa4
             }
         }
 
-        #region Управление фоновым датчиком
-
         private void ToggleSensor()
         {
-            if (IsSensorRunning)
-            {
-                StopSensor();
-            }
-            else
-            {
-                StartSensor();
-            }
+            if (IsSensorRunning) StopSensor();
+            else StartSensor();
         }
 
         private void StartSensor()
@@ -218,14 +267,53 @@ namespace tpkursa4
                     bool isParentRegion = SelectedLocation is Region reg && reg.Settlements.Any(s => s.Id == settlement.Id);
 
                     if (isCurrentSettlement || isParentRegion)
-                    {
                         await RefreshAsync();
-                    }
                 }
             });
         }
 
-        #endregion
+        private void ToggleFavorite()
+        {
+            if (!(_selectedLocation is Settlement settlement) || _user == null || _user.Id <= 0)
+            {
+                ErrorMessage = "Избранное доступно для поселения после входа.";
+                return;
+            }
+
+            try
+            {
+                bool next = !settlement.IsFavorite;
+                _repository.SetFavorite(_user.Id, settlement.Id, next);
+                settlement.IsFavorite = next;
+                OnPropertyChanged(nameof(FavoriteButtonText));
+                StatusText = next ? $"В избранном: {settlement.Name}" : $"Убрано из избранного: {settlement.Name}";
+            }
+            catch (Exception ex)
+            {
+                ErrorMessage = $"Не удалось обновить избранное: {ex.Message}";
+            }
+        }
+
+        private void FilterByWeather()
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(ConditionFilter))
+                {
+                    WeatherQueryResult = "Выберите условие погоды.";
+                    return;
+                }
+
+                var names = _repository.GetSettlementsByWeather(ConditionFilter);
+                WeatherQueryResult = names.Count == 0
+                    ? $"Нет поселений с погодой «{ConditionFilter}»."
+                    : "Поселения: " + string.Join(", ", names);
+            }
+            catch (Exception ex)
+            {
+                ErrorMessage = $"Запрос к БД не удался: {ex.Message}";
+            }
+        }
 
         private WeatherPeriod BuildPeriod(out string error)
         {
@@ -260,14 +348,10 @@ namespace tpkursa4
 
                 Measurements.Clear();
                 foreach (var m in list)
-                {
                     Measurements.Add(m);
-                }
 
                 if (!IsSensorRunning)
-                {
                     StatusText = $"Замеров: {list.Count} | {SelectedLocation.Name}";
-                }
             }
             catch (Exception ex)
             {
@@ -299,16 +383,19 @@ namespace tpkursa4
         private void FillInputsFromSelection()
         {
             if (SelectedMeasurement == null) return;
-            NewTemperature = SelectedMeasurement.Temperature.ToString(CultureInfo.InvariantCulture);
-            NewHumidity = SelectedMeasurement.Humidity.ToString(CultureInfo.InvariantCulture);
-            NewPressure = SelectedMeasurement.Pressure.ToString(CultureInfo.InvariantCulture);
-            NewWindSpeed = SelectedMeasurement.WindSpeed.ToString(CultureInfo.InvariantCulture);
+            NewTemperature = Format(SelectedMeasurement.Temperature);
+            NewHumidity = Format(SelectedMeasurement.Humidity);
+            NewPressure = Format(SelectedMeasurement.Pressure);
+            NewWindSpeed = Format(SelectedMeasurement.WindSpeed);
 
             OnPropertyChanged(nameof(NewTemperature));
             OnPropertyChanged(nameof(NewHumidity));
             OnPropertyChanged(nameof(NewPressure));
             OnPropertyChanged(nameof(NewWindSpeed));
         }
+
+        private static string Format(double? value) =>
+            value.HasValue ? value.Value.ToString(CultureInfo.InvariantCulture) : "";
 
         private async void AddAsync()
         {
@@ -323,16 +410,18 @@ namespace tpkursa4
                 ErrorMessage = parseError;
                 return;
             }
-            if (!_validator.TryValidate(m, settlement, out string validationError))
-            {
-                ErrorMessage = validationError;
-                return;
-            }
 
             IsBusy = true;
             try
             {
-                await _repository.SaveMeasurementAsync(settlement, m);
+                string validationError = null;
+                bool ok = false;
+                await Task.Run(() => ok = _manager.TryRecordWeather(settlement, m, out validationError));
+                if (!ok)
+                {
+                    ErrorMessage = validationError;
+                    return;
+                }
                 await RefreshAsync();
             }
             catch (Exception ex)
@@ -363,16 +452,19 @@ namespace tpkursa4
                 ErrorMessage = parseError;
                 return;
             }
-            if (!_validator.TryValidate(m, settlement, out string validationError))
-            {
-                ErrorMessage = validationError;
-                return;
-            }
 
             IsBusy = true;
             try
             {
-                await Task.Run(() => _manager.UpdateObservation(settlement, SelectedMeasurement.Timestamp, m));
+                var oldTs = SelectedMeasurement.Timestamp;
+                string validationError = null;
+                bool ok = false;
+                await Task.Run(() => ok = _manager.TryUpdateObservation(settlement, oldTs, m, out validationError));
+                if (!ok)
+                {
+                    ErrorMessage = validationError;
+                    return;
+                }
                 await RefreshAsync();
             }
             catch (Exception ex)
@@ -422,7 +514,7 @@ namespace tpkursa4
             IsBusy = true;
             try
             {
-                int rows = await _repository.SeedTestDataAsync(30);
+                int rows = await _manager.SeedTestDataAsync(30);
                 StatusText = $"Добавлено записей: {rows}";
                 await RefreshAsync();
             }
